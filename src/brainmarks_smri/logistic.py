@@ -62,7 +62,7 @@ class TorchLogisticRegressionCV:
             n_val_groups = int(val_groups.max()) + 1
             for alpha_id, alpha in enumerate(self.alphas):
                 coef, intercept, n_iter = fit_logistic(
-                    features[train_ids], targets[train_ids], alpha, **fit_kwargs
+                    features, targets, alpha, rows=train_ids, **fit_kwargs
                 )
                 cv_n_iter[split_id, alpha_id] = n_iter
                 val_logits = features[val_ids].float() @ coef + intercept
@@ -106,11 +106,16 @@ def fit_logistic(
     max_negative_ratio: float | None = None,
     max_iter: int = 1000,
     seed: int = 0,
+    rows: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, int]:
     """L2 logistic regression on standardized features, one binary problem per target column.
 
-    Returns weights and intercepts that apply to the raw features, and the l-bfgs iterations.
+    Fits on `rows` (indices) of features and targets, all rows by default. Returns weights and
+    intercepts that apply to the raw features, and the l-bfgs iterations.
     """
+    if rows is None:
+        rows = torch.arange(len(features), device=features.device)
+    targets = targets[rows]
     if max_negative_ratio is not None:
         # keep every row with a positive target, and about max_negative_ratio negatives per positive
         positive = targets.any(dim=1)
@@ -120,14 +125,15 @@ def fit_logistic(
         generator = torch.Generator().manual_seed(seed)
         random = torch.rand(len(positive), generator=generator).to(features.device)
         keep = positive | (random < negative_fraction)
-        features = features[keep]
+        rows = rows[keep]
         targets = targets[keep]
 
-    features = features.float()
+    # indexing copies, so the standardization can be in place without touching the caller's features
+    features = features[rows].float()
     targets = targets.float()
     mean = features.mean(dim=0)
     std = features.std(dim=0, correction=0).clamp_min(1e-6)
-    features = (features - mean) / std
+    features.sub_(mean).div_(std)
 
     n, d = features.shape
     n_outputs = targets.shape[1]
